@@ -1,100 +1,48 @@
 ---
 name: gh-fast-download
-description: High-speed GitHub downloads via gh-proxy mirrors for users whose direct GitHub access is slow or blocked (e.g. mainland China). Use whenever the user asks to download, clone, or fetch a repository, raw file, or release asset from github.com / raw.githubusercontent.com — route it through a proxy mirror instead of hitting GitHub directly.
+description: Download public GitHub repository snapshots, raw files, and release assets through community mirrors when direct access is slow. Use the bundled safe downloader after official unauthenticated public-repository verification. Private or unverified repositories use official authenticated GitHub access instead.
 ---
 
 # gh-fast-download
 
-Download GitHub content at high speed by routing through gh-proxy mirrors. For users whose direct GitHub connection is slow (typical in mainland China), this turns a painfully slow `git clone` / browser download into a fast one.
+Use this workflow when the user requests an actual download. Repository maintenance or review of these instructions is not a download request. Run the bundled `ghdl.py`; do not substitute handwritten proxy URLs, curl/wget commands or mirrored Git clones that bypass its checks.
 
-## First step — ask for the link
+## Understand the requested result
 
-When this skill activates and the user has not already pasted a concrete GitHub URL, begin by asking (verbatim, in Chinese):
+Use the GitHub URL and output directory already supplied in the conversation. Ask for the link only when the intended project cannot be identified. Resolve routine filenames and local paths yourself. Check that Python 3.8+ is already available; follow the host's authorization rules before installing software.
 
-> 您需要下载哪个github项目，请输入原github项目链接，我会帮您急速下载
+The script supports repository snapshots, `/blob/REF/PATH` and raw files, `/releases/download/TAG/FILE`, and ZIP archives. It does not fetch Git history. Use official `gh repo clone` when the user actually needs a clone.
 
-Wait for their reply before doing anything else. Skip this question only if the user already included a GitHub URL in their message.
+## Public visibility is required
 
-## Core rule — how to convert a URL
+A syntactically valid URL does **not** prove that a repository is public. Never send private or unverified repository names, credentials, tokens or authenticated URLs to a community mirror.
 
-Prepend a mirror domain to the **full original URL, keeping its `https://`**:
+The CLI first uses an unauthenticated request to the official `api.github.com` repository endpoint. It requires an explicit `private: false`, compatible visibility and a matching repository identity. Only after that succeeds does it contact mirrors. Treat API errors, rate limits, unexpected responses and failed public verification as a stop: use the official GitHub CLI's authenticated direct access for the requested download. Do not work around the failure by manually prefixing a mirror domain. A user statement or `gh` result can help establish intent and visibility, but does not bypass the script's public check.
 
-```
-original : https://github.com/OWNER/REPO
-proxied  : https://gh-proxy.org/https://github.com/OWNER/REPO
-```
+Reject URLs with userinfo, query parameters, fragments, unsupported hosts/protocols/ports or unsupported paths. Do not copy a token into a new URL to make a failed request work. The script does not use or forward the user's GitHub credentials.
 
-Everything after the mirror's `/` is treated as the target URL. That is the entire trick.
+## Download through the shared safe path
 
-## Mirrors (try in order until one succeeds)
+Resolve `ghdl.py` relative to this skill directory and run it with the original GitHub URL and the chosen output directory:
 
-1. `https://gh-proxy.org/`
-2. `https://gh-proxy.com/`
-3. `https://ghfast.top/`
-4. `https://ghproxy.net/`
-5. `https://mirror.ghproxy.com/`
-
-These are community mirrors and rotate over time. If several fail, replace them with currently-live ones (search "gh proxy 加速" for the current list).
-
-## Procedure
-
-1. **Identify the target type** from the user's URL:
-   - whole repository → Case A (clone) or B (zip)
-   - single file → Case C
-   - release asset → Case D
-
-2. **Build the proxied URL** for that case.
-
-3. **Download** using the right command for the OS. Always use `-L` (follow redirects).
-
-4. **Verify**: file exists with non-zero size, or a `.git` directory exists for clones.
-
-5. **Report** the local path to the user.
-
-## Case A — clone a whole repository
-
-```
-git clone https://gh-proxy.org/https://github.com/OWNER/REPO.git
+```console
+python <skill-directory>/ghdl.py <public-github-url> <output-directory>
 ```
 
-If the mirror rejects the `.git` suffix, drop it, or use Case B.
+Keep commands and dependency details Agent-handled unless the user asks for them. For a repository root, the script tries `main`, then `master`. If neither is the desired ref, resolve the actual public branch/tag with official GitHub metadata and use its explicit supported ZIP archive URL.
 
-## Case B — repository snapshot as a zip (no git needed)
+An existing destination is preserved by default. Prefer a distinct output directory or filename. Use `--overwrite` only when replacement was explicitly requested or authorized by the user. It replaces the destination atomically after the complete new response passes checks.
 
-Default branch is usually `main`; fall back to `master`, then a tag.
+The script stages data in a temporary sibling, checks HTTP status, nonempty content and any Content-Length, rejects obvious HTML pages for non-HTML targets, and cleans partials before retrying mirrors. Explicit `.html`/`.htm` targets remain allowed. Explicit ZIP targets receive a directory-structure check without extraction or full member CRC validation. Mirror configuration belongs only in `ghdl.py`'s `PROXIES`; do not maintain a second list here.
 
-```
-curl -L -o repo.zip "https://gh-proxy.org/https://github.com/OWNER/REPO/archive/refs/heads/main.zip"
-```
+## Verify and report
 
-If `main.zip` 404s, try `master.zip`, then `refs/tags/<TAG>.zip`.
+Check the script exit status and actual final file. Report its resolved path and relevant limitations plainly. For important executables or archives, compare against the publisher's official checksum/signature when available before treating content as verified. Do not execute, install or extract downloaded code just to prove that a download completed.
 
-## Case C — single file (raw)
+HTML detection is a heuristic using response type and the first 1024 bytes, skipping leading whitespace and complete HTML comments; it cannot detect every disguised error. The response checks cannot establish content authenticity or safe executable behavior. HTML targets can still receive an HTML error page, and ZIP structure alone does not validate every member or prove the publisher's identity. Public mirror speed and availability require separate current evidence; do not promise them from offline tests.
 
-First convert a `blob` URL to `raw`, then proxy it:
+All-mirror failure leaves existing files unchanged. Continue with official GitHub direct access when that is available and authorized, carrying forward the same no-overwrite and partial-file cleanup requirements. Do not repeatedly retry community mirrors or claim success because a nonempty file exists.
 
-```
-github.com/OWNER/REPO/blob/BRANCH/PATH
-   ↓
-https://gh-proxy.org/https://raw.githubusercontent.com/OWNER/REPO/BRANCH/PATH
-```
+## Maintenance check
 
-## Case D — release asset
-
-```
-https://gh-proxy.org/https://github.com/OWNER/REPO/releases/download/TAG/FILE
-```
-
-## Download commands by OS
-
-- Windows (PowerShell): `curl.exe -L -o FILE "URL"`  (or `Invoke-WebRequest -Uri "URL" -OutFile FILE`)
-- macOS / Linux: `curl -L -o FILE "URL"`  (or `wget -O FILE "URL"`)
-
-## Fallback
-
-If every mirror fails (404 / 503 / timeout), tell the user the mirrors may be down, then retry with the **direct** URL as a last resort (slow but functional).
-
-## Safety
-
-- Only route **public** URLs through these mirrors. Never send private repos, authenticated URLs, or tokens through a third-party proxy.
-- Mirrors are third-party and community-run; there is no uptime guarantee.
+Run `python -m unittest discover -s tests -v` from the repository root. The suite uses mocked HTTP only. Never use a user's private repository, API token or real mirror download as a test fixture.
